@@ -26,6 +26,11 @@ history to resolve ambiguous references like "what about hermes?", "drill deeper
 "same thing for odin", "and the 502s?". If the user references a service or error type
 from a previous message, carry that context forward.
 
+IMPORTANT — follow-up escalation phrases like "do a deeper analysis", "deep dive", "go deeper",
+"dig deeper", "more details", "investigate further", "root cause", "why is this happening"
+MUST inherit the query_type and service_name from the most recent conversation turn, NOT default
+to "general". Set needs_deep_analysis to true for these phrases.
+
 Respond ONLY with a JSON object (no markdown, no backticks), with these fields:
 {{
     "query_type": one of ["error_analysis", "memory_spike", "performance", "latency", "general"],
@@ -33,7 +38,7 @@ Respond ONLY with a JSON object (no markdown, no backticks), with these fields:
     "time_range": extracted time range as NRQL-compatible string (e.g. "24 hours ago", "1 hour ago", "7 days ago"). Default to "24 hours ago" if not specified.,
     "severity": one of ["low", "medium", "high"] based on urgency of the question,
     "search_terms": list of 3-5 keywords to search for in the codebase (function names, error types, modules),
-    "needs_deep_analysis": true if this requires code-level investigation (memory leaks, complex RCA), false for simple log summaries,
+    "needs_deep_analysis": true if this requires code-level investigation (memory leaks, complex RCA, root cause analysis) OR if the user explicitly asks for a deeper/more detailed analysis, false for simple log summaries,
     "summary": one-line summary of what the user is asking (resolve any follow-up references)
 }}
 
