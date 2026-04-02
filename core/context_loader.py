@@ -8,12 +8,15 @@ Loads code context from multiple sources in priority order:
 This bridges your existing Master Repo tools with Nocu's analysis pipeline.
 """
 
+import logging
 import os
 import json
 import glob
 from typing import Optional
 from pathlib import Path
 from dataclasses import dataclass
+
+logger = logging.getLogger("nocu.context")
 
 
 @dataclass
@@ -171,10 +174,10 @@ class CodeContextLoader:
                 try:
                     with open(path, "r") as f:
                         content = f.read()
-                    print(f"[context] Loaded deepmap from: {path}")
+                    logger.info("Loaded deepmap path=%s chars=%d", path, len(content))
                     break
                 except Exception as e:
-                    print(f"[context] Failed to read {path}: {e}")
+                    logger.error("Failed to read deepmap path=%s error=%s", path, e)
 
         if not content:
             return None
@@ -322,7 +325,7 @@ class CodeContextLoader:
             return content
 
         except Exception as e:
-            print(f"[context] Failed to read servicemap: {e}")
+            logger.error("Failed to read servicemap path=%s error=%s", dep_path, e)
             return None
 
     def _load_scanner(
@@ -348,7 +351,7 @@ class CodeContextLoader:
                     index.save(index_dir)
                     self._scanner_indexes[service_name] = index
                 except Exception as e:
-                    print(f"[context] Failed to build scanner index for {service_name}: {e}")
+                    logger.error("Failed to build scanner index service=%s error=%s", service_name, e, exc_info=True)
                     return None
             else:
                 return None
@@ -359,7 +362,7 @@ class CodeContextLoader:
                 from indexer.models import ServiceIndex
                 self._scanner_indexes[service_name] = ServiceIndex.load(index_path)
             except Exception as e:
-                print(f"[context] Failed to load scanner index: {e}")
+                logger.error("Failed to load scanner index service=%s path=%s error=%s", service_name, index_path, e)
                 return None
 
         index = self._scanner_indexes[service_name]
@@ -388,8 +391,8 @@ class CodeContextLoader:
                                 extracted.append("...")
                         content = "\n".join(extracted) if extracted else content[:3000]
                     relevant_parts.append(f"--- {rf['filepath']} ---\n{content}")
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning("Failed to read source file path=%s error=%s", filepath, e)
 
         # Build a function map from scanner data
         func_map_lines = []

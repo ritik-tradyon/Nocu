@@ -5,8 +5,11 @@ require deep code-level investigation.
 """
 
 import json
+import logging
 from google import genai
 from typing import Optional
+
+logger = logging.getLogger("nocu.gemini")
 
 
 ERROR_ANALYSIS_PROMPT = """You are a production observability expert analyzing error logs for a Python {framework} service called "{service_name}".
@@ -117,6 +120,7 @@ class GeminiAnalyzer:
             response = self.client.models.generate_content(model=self.model_name, contents=prompt)
             return response.text.strip()
         except Exception as e:
+            logger.error("Gemini analyze_errors failed service=%s error=%s", service_name, e, exc_info=True)
             return f"Analysis failed: {e}"
 
     def analyze_performance(
@@ -140,6 +144,7 @@ class GeminiAnalyzer:
             response = self.client.models.generate_content(model=self.model_name, contents=prompt)
             return response.text.strip()
         except Exception as e:
+            logger.error("Gemini analyze_performance failed service=%s error=%s", service_name, e, exc_info=True)
             return f"Analysis failed: {e}"
 
     def analyze_custom(self, prompt: str) -> str:
@@ -148,4 +153,5 @@ class GeminiAnalyzer:
             response = self.client.models.generate_content(model=self.model_name, contents=prompt)
             return response.text.strip()
         except Exception as e:
+            logger.error("Gemini analyze_custom failed error=%s", e, exc_info=True)
             return f"Analysis failed: {e}"

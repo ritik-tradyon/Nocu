@@ -182,7 +182,13 @@ class HealthReportScheduler:
             perf = fetcher.get_performance_summary(app_name, since=self._nrql_since())
             errors = fetcher.get_error_counts_by_type(app_name, since=self._nrql_since())
         except Exception as e:
+            logger.error("Digest fetch failed service=%s app=%s error=%s", service_name, app_name, e, exc_info=True)
             return f"❌ {service_name}: failed to fetch data ({e})"
+
+        if perf.error:
+            logger.error("NR perf query error service=%s app=%s error=%s", service_name, app_name, perf.error)
+        if errors.error:
+            logger.error("NR errors query error service=%s app=%s error=%s", service_name, app_name, errors.error)
 
         # Parse performance
         status_emoji = "✅"

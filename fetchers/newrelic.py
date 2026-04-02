@@ -4,9 +4,12 @@ Executes NRQL queries to fetch logs, metrics, errors, and performance data.
 """
 
 import json
+import logging
 import requests
 from typing import Optional
 from dataclasses import dataclass
+
+logger = logging.getLogger("nocu.newrelic")
 
 
 # NerdGraph endpoints by region
@@ -99,19 +102,24 @@ class NewRelicFetcher:
             # Check for GraphQL errors
             if "errors" in data:
                 error_msg = "; ".join(e.get("message", "") for e in data["errors"])
+                logger.error("NerdGraph error nrql=%r error=%s", nrql[:120], error_msg)
                 return NRQLResult(query=nrql, results=[], error=error_msg)
 
             # Extract results
             nrql_data = data["data"]["actor"]["account"]["nrql"]
-            return NRQLResult(
+            result = NRQLResult(
                 query=nrql,
                 results=nrql_data.get("results", []),
                 metadata=nrql_data.get("metadata"),
             )
+            logger.debug("NerdGraph ok nrql=%r rows=%d", nrql[:120], len(result.results))
+            return result
 
         except requests.RequestException as e:
+            logger.error("NerdGraph request failed nrql=%r error=%s", nrql[:120], e)
             return NRQLResult(query=nrql, results=[], error=str(e))
         except (KeyError, TypeError) as e:
+            logger.error("NerdGraph unexpected response nrql=%r error=%s", nrql[:120], e)
             return NRQLResult(query=nrql, results=[], error=f"Unexpected response format: {e}")
 
     # ──────────────────────────────────────────────
