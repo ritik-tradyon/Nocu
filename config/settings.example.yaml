@@ -127,3 +127,30 @@ gateway:
   config_path: ""  # e.g. /path/to/apisix/conf/config.yaml
   # If APISIX logs flow to New Relic, set the app name
   newrelic_app_name: ""  # e.g. "APISIX-Gateway-Prod"
+
+# ─────────────────────────────────────────────────
+# Incident Memory
+# ─────────────────────────────────────────────────
+memory:
+  db_path: ".nocu_memory/nocu.db"
+  retention_days: 60  # auto-prune incidents and user memory older than this
+
+# ─────────────────────────────────────────────────
+# Scheduled Health Reports
+# ─────────────────────────────────────────────────
+schedule:
+  enabled: true
+  # When to send the daily digest (your local time)
+  report_hour: 9
+  report_minute: 0
+  # Your timezone offset from UTC (IST = 5.5)
+  timezone_offset_hours: 5.5
+  # How far back to look in each report
+  period: "24 hours"
+  # Telegram chat IDs to send the digest to
+  # (same as your allowed_chat_ids, or different group chats)
+  chat_ids: []  # e.g. [123456789]
+  # Which checks to run per service
+  checks:
+    - "error_summary"
+    - "performance_summary"

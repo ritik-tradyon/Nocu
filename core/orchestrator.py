@@ -13,6 +13,7 @@ from typing import Optional, Callable
 
 from core.classifier import QueryClassifier, ClassifiedQuery
 from core.context_loader import CodeContextLoader
+from core.memory import IncidentMemory
 from core.formatter import format_response, format_error_message
 from fetchers.newrelic import NewRelicFetcher
 from analyzers.gemini import GeminiAnalyzer
@@ -61,7 +62,6 @@ class NocuOrchestrator:
         self.claude_analyzer = ClaudeAnalyzer(
             timeout_seconds=claude_config.get("timeout_seconds", 120),
             enabled=claude_config.get("enabled", True),
-            cli_path=claude_config.get("cli_path"),
         )
         self.deep_analysis_types = set(
             claude_config.get("deep_analysis_types", [])
@@ -79,15 +79,27 @@ class NocuOrchestrator:
             sources.append("scanner (fallback)")
         print(f"[nocu] Code context sources: {', '.join(sources) or 'none configured'}")
 
+        # Incident memory
+        mem_config = self.config.get("memory", {})
+        self.memory = IncidentMemory(
+            db_path=mem_config.get("db_path", ".nocu_memory/incidents.db"),
+            retention_days=mem_config.get("retention_days", 60),
+        )
+        stats = self.memory.get_stats()
+        print(f"[nocu] Incident memory: {stats['total_incidents']} incidents, "
+              f"{stats['known_fixes']} known fixes")
+
     async def process_question(
         self,
         question: str,
+        user_id: str = "",
         status_callback: Optional[Callable] = None,
     ) -> list[str]:
         """Process a natural language question through the full pipeline.
 
         Args:
             question: The user's question.
+            user_id: Telegram user ID for conversation history.
             status_callback: Optional async function to send status updates.
 
         Returns:
@@ -95,11 +107,22 @@ class NocuOrchestrator:
         """
         start_time = time.time()
 
-        # ── Step 1: Classify the query ──
+        # ── Store the user's question ──
+        if user_id:
+            self.memory.store_user_message(
+                user_id=user_id, role="user", content=question
+            )
+
+        # ── Step 1: Classify the query (with conversation context) ──
         if status_callback:
             await status_callback("🧠 Understanding your question...")
 
-        classified = self.classifier.classify(question)
+        # Build conversation context so classifier can resolve follow-ups
+        conversation_context = ""
+        if user_id:
+            conversation_context = self.memory.build_conversation_context(user_id)
+
+        classified = self.classifier.classify(question, conversation_context)
 
         if not classified.is_valid:
             return [format_error_message(
@@ -124,13 +147,27 @@ class NocuOrchestrator:
 
         observability_data = self._fetch_data(classified, app_name)
 
-        # ── Step 3: Load relevant code context ──
+        # ── Step 3: Extract error codes + classes from NR data ──
+        error_codes, error_classes = self._extract_error_info(observability_data)
+
+        # ── Step 4: Query incident memory for similar past incidents ──
+        memory_context = self.memory.build_memory_context(
+            service_name=classified.service_name,
+            error_codes=error_codes,
+            error_classes=error_classes,
+            query_type=classified.query_type,
+        )
+        if memory_context:
+            if status_callback:
+                await status_callback("🧠 Found similar past incidents...")
+
+        # ── Step 5: Load relevant code context ──
         if status_callback:
             await status_callback("📂 Loading relevant code...")
 
         code_context = self._load_code_context(classified)
 
-        # ── Step 4: Analyze ──
+        # ── Step 6: Analyze (with memory context injected) ──
         analyzer_used = self._pick_analyzer(classified)
 
         if status_callback:
@@ -140,14 +177,44 @@ class NocuOrchestrator:
             classified=classified,
             observability_data=observability_data,
             code_context=code_context,
+            memory_context=memory_context,
             service_config=service_config,
             framework=framework,
             analyzer_used=analyzer_used,
         )
 
-        # ── Step 5: Format response ──
+        # ── Step 7: Store this incident in memory ──
+        incident_id = self.memory.store_incident(
+            question=question,
+            query_type=classified.query_type,
+            service_name=classified.service_name,
+            time_range=classified.time_range,
+            search_terms=classified.search_terms,
+            error_codes=error_codes,
+            error_classes=error_classes,
+            nr_data_summary=self._summarize_nr_data(observability_data),
+            analyzer_used=analyzer_used,
+            analysis=analysis,
+            code_references=[],
+            sources_used=code_context.get("sources_used", []),
+        )
+
+        # ── Step 8: Format response with incident ID ──
         elapsed = time.time() - start_time
         analysis += f"\n\n⏱ Analysis completed in {elapsed:.1f}s"
+        analysis += f"\n📝 Incident ID: {incident_id}"
+        analysis += f"\nReply /useful {incident_id} or /notuseful {incident_id}"
+        analysis += f"\nTo record fix: /fix {incident_id} <what you did>"
+
+        # ── Store Nocu's response in conversation history ──
+        if user_id:
+            self.memory.store_user_message(
+                user_id=user_id,
+                role="nocu",
+                content=analysis,
+                incident_id=incident_id,
+                service_name=classified.service_name,
+            )
 
         return format_response(
             analysis=analysis,
@@ -156,6 +223,46 @@ class NocuOrchestrator:
             time_range=classified.time_range,
             analyzer_used=analyzer_used,
         )
+
+    def _extract_error_info(self, observability_data: dict) -> tuple[list[str], list[str]]:
+        """Extract error codes and error classes from New Relic data."""
+        error_codes = set()
+        error_classes = set()
+
+        for key, result in observability_data.items():
+            if result is None or result.is_empty:
+                continue
+            for row in result.results:
+                # Extract HTTP status codes
+                for field in ("httpResponseCode", "http.statusCode", "response.status", "statusCode"):
+                    val = row.get(field)
+                    if val and str(val).startswith(("4", "5")):
+                        error_codes.add(str(val))
+
+                # Extract error classes
+                for field in ("error.class", "error.expected", "errorType", "error_class"):
+                    val = row.get(field)
+                    if val and val not in ("None", "null", ""):
+                        error_classes.add(str(val))
+
+                # Extract from error messages (common patterns)
+                msg = row.get("error.message") or row.get("message") or ""
+                if "status" in msg.lower():
+                    # Try to pull status codes from messages like "HTTP 502" or "status: 500"
+                    import re
+                    codes_in_msg = re.findall(r'\b([45]\d{2})\b', msg)
+                    error_codes.update(codes_in_msg)
+
+        return sorted(error_codes), sorted(error_classes)
+
+    def _summarize_nr_data(self, observability_data: dict) -> str:
+        """Create a compact summary of NR data for memory storage."""
+        parts = []
+        for key, result in observability_data.items():
+            if result is None or result.is_empty:
+                continue
+            parts.append(f"{key}: {len(result.results)} results")
+        return "; ".join(parts) if parts else "no data"
 
     def _fetch_data(self, classified: ClassifiedQuery, app_name: str) -> dict:
         """Fetch relevant data from New Relic based on query type."""
@@ -252,14 +359,19 @@ class NocuOrchestrator:
         classified: ClassifiedQuery,
         observability_data: dict,
         code_context: dict,
+        memory_context: str,
         service_config: dict,
         framework: str,
         analyzer_used: str,
     ) -> str:
         """Run the analysis with the selected analyzer."""
 
+        # Prepend memory context to code context if available
+        combined_code_context = code_context["relevant_code"]
+        if memory_context:
+            combined_code_context = memory_context + "\n\n" + combined_code_context
+
         if analyzer_used == "Claude Code":
-            # Combine all observability data into one string
             obs_parts = []
             for key, result in observability_data.items():
                 obs_parts.append(f"### {key}\n{result.to_summary()}")
@@ -271,12 +383,11 @@ class NocuOrchestrator:
                 framework=framework,
                 observability_data=obs_text,
                 endpoints_summary=code_context["endpoints_summary"],
-                relevant_code=code_context["relevant_code"],
+                relevant_code=combined_code_context,
                 repo_path=code_context.get("repo_path"),
             )
 
         else:
-            # Gemini analysis — route by query type
             if classified.query_type == "error_analysis":
                 return self.gemini_analyzer.analyze_errors(
                     service_name=classified.service_name,
@@ -289,7 +400,7 @@ class NocuOrchestrator:
                         if observability_data.get("transaction_errors") else "",
                     deployments=observability_data.get("deployments", "").to_summary()
                         if observability_data.get("deployments") else "",
-                    relevant_code=code_context["relevant_code"],
+                    relevant_code=combined_code_context,
                     time_range=classified.time_range,
                 )
 
@@ -301,11 +412,10 @@ class NocuOrchestrator:
                         if observability_data.get("performance") else "",
                     slow_endpoints=observability_data.get("slow_endpoints", "").to_summary()
                         if observability_data.get("slow_endpoints") else "",
-                    relevant_code=code_context["relevant_code"],
+                    relevant_code=combined_code_context,
                 )
 
             else:
-                # General — combine everything into a custom prompt
                 obs_parts = []
                 for key, result in observability_data.items():
                     obs_parts.append(f"{key}: {result.to_summary()}")
@@ -313,7 +423,7 @@ class NocuOrchestrator:
                 custom_prompt = (
                     f"Question about {classified.service_name}: {classified.raw_question}\n\n"
                     f"Data:\n{'|'.join(obs_parts)}\n\n"
-                    f"Code context:\n{code_context['relevant_code']}\n\n"
+                    f"Code context:\n{combined_code_context}\n\n"
                     f"Provide a concise answer. Plain text for Telegram."
                 )
                 return self.gemini_analyzer.analyze_custom(custom_prompt)
