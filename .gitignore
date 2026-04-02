@@ -1,0 +1,30 @@
+# IDE
+.idea/
+.vscode/
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Project index / cache
+.nocu_index/
+
+# Secrets / local config
+config/settings.yaml
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
