@@ -6,6 +6,7 @@ code loading, analysis, and formatting.
 
 import os
 import json
+import logging
 import time
 import yaml
 from pathlib import Path
@@ -18,6 +19,8 @@ from core.formatter import format_response, format_error_message
 from fetchers.newrelic import NewRelicFetcher
 from analyzers.gemini import GeminiAnalyzer
 from analyzers.claude import ClaudeAnalyzer
+
+logger = logging.getLogger("nocu.orchestrator")
 
 
 class NocuOrchestrator:
@@ -78,7 +81,7 @@ class NocuOrchestrator:
             sources.append("servicemap")
         if cc.get("scanner", {}).get("enabled"):
             sources.append("scanner (fallback)")
-        print(f"[nocu] Code context sources: {', '.join(sources) or 'none configured'}")
+        logger.info("Code context sources: %s", ', '.join(sources) or 'none configured')
 
         # Incident memory
         mem_config = self.config.get("memory", {})
@@ -87,8 +90,7 @@ class NocuOrchestrator:
             retention_days=mem_config.get("retention_days", 60),
         )
         stats = self.memory.get_stats()
-        print(f"[nocu] Incident memory: {stats['total_incidents']} incidents, "
-              f"{stats['known_fixes']} known fixes")
+        logger.info("Incident memory: %d incidents, %d known fixes", stats['total_incidents'], stats['known_fixes'])
 
     async def process_question(
         self,
@@ -125,7 +127,17 @@ class NocuOrchestrator:
 
         classified = self.classifier.classify(question, conversation_context)
 
+        logger.info(
+            "Classified question=%r service=%s type=%s needs_deep=%s severity=%s",
+            question[:100], classified.service_name, classified.query_type,
+            classified.needs_deep_analysis, classified.severity,
+        )
+
         if not classified.is_valid:
+            logger.warning(
+                "Invalid classification service=%s type=%s — rejecting question=%r",
+                classified.service_name, classified.query_type, question[:100],
+            )
             return [format_error_message(
                 f"I couldn't understand which service you're asking about.\n\n"
                 f"Available services: {', '.join(self.config.get('services', {}).keys())}\n\n"
@@ -134,6 +146,11 @@ class NocuOrchestrator:
 
         service_config = self.config.get("services", {}).get(classified.service_name)
         if not service_config:
+            logger.error(
+                "Service not in config service=%s available=%s",
+                classified.service_name,
+                list(self.config.get("services", {}).keys()),
+            )
             return [format_error_message(
                 f"Service '{classified.service_name}' is not configured.\n"
                 f"Available: {', '.join(self.config.get('services', {}).keys())}"
@@ -147,6 +164,22 @@ class NocuOrchestrator:
             await status_callback(f"📡 Fetching data from New Relic for {classified.service_name}...")
 
         observability_data = self._fetch_data(classified, app_name)
+
+        # ── Step 2b: Warn if no production data came back ──
+        has_nr_data = any(
+            r is not None and not r.is_empty and not r.error
+            for r in observability_data.values()
+        )
+        if not has_nr_data:
+            logger.warning(
+                "No NR data for service=%s app=%s — continuing with code context only",
+                classified.service_name, app_name,
+            )
+            if status_callback:
+                await status_callback(
+                    f"⚠️ No data found in New Relic for '{app_name}'. "
+                    f"Response will be based on code context only."
+                )
 
         # ── Step 3: Extract error codes + classes from NR data ──
         error_codes, error_classes = self._extract_error_info(observability_data)
@@ -183,6 +216,14 @@ class NocuOrchestrator:
             framework=framework,
             analyzer_used=analyzer_used,
         )
+
+        if not has_nr_data:
+            analysis = (
+                f"⚠️ No New Relic data found for '{app_name}'. "
+                f"This service may not be instrumented. "
+                f"The following is based on code structure only — not live production data.\n\n"
+                + analysis
+            )
 
         # ── Step 7: Store this incident in memory ──
         incident_id = self.memory.store_incident(
@@ -265,6 +306,27 @@ class NocuOrchestrator:
             parts.append(f"{key}: {len(result.results)} results")
         return "; ".join(parts) if parts else "no data"
 
+    def _log_nr_results(self, data: dict, app_name: str):
+        """Log a summary of NR fetch results, including errors and empty responses."""
+        all_empty = True
+        for key, result in data.items():
+            if result is None:
+                logger.warning("NR fetch returned None key=%s app=%s", key, app_name)
+            elif result.error:
+                logger.error("NR fetch error key=%s app=%s error=%s nrql=%r", key, app_name, result.error, result.query[:120])
+            elif result.is_empty:
+                logger.warning("NR fetch empty key=%s app=%s — service may not be reporting to New Relic nrql=%r", key, app_name, result.query[:120])
+            else:
+                all_empty = False
+                logger.info("NR fetch ok key=%s app=%s rows=%d", key, app_name, len(result.results))
+
+        if all_empty:
+            logger.warning(
+                "ALL NR queries returned empty for app=%s — no production data available, "
+                "analysis will be code-context only. Check if this service is instrumented in New Relic.",
+                app_name,
+            )
+
     def _fetch_data(self, classified: ClassifiedQuery, app_name: str) -> dict:
         """Fetch relevant data from New Relic based on query type."""
         data = {}
@@ -324,6 +386,7 @@ class NocuOrchestrator:
                 app_name, since=classified.time_range
             )
 
+        self._log_nr_results(data, app_name)
         return data
 
     def _load_code_context(self, classified: ClassifiedQuery) -> dict:
@@ -337,9 +400,9 @@ class NocuOrchestrator:
         )
 
         if context.sources_used:
-            print(f"[nocu] Code context loaded from: {', '.join(context.sources_used)}")
+            logger.info("Code context loaded service=%s sources=%s", classified.service_name, ', '.join(context.sources_used))
         else:
-            print(f"[nocu] No code context available for {classified.service_name}")
+            logger.warning("No code context available service=%s", classified.service_name)
 
         return {
             "endpoints_summary": context.endpoints_summary,
@@ -349,8 +412,18 @@ class NocuOrchestrator:
 
     def _pick_analyzer(self, classified: ClassifiedQuery) -> str:
         """Decide which analyzer to use."""
-        if classified.needs_deep_analysis and self.claude_analyzer.is_available():
-            return "Claude Code"
+        if classified.needs_deep_analysis:
+            if self.claude_analyzer.is_available():
+                logger.info("Analyzer=ClaudeCode service=%s type=%s", classified.service_name, classified.query_type)
+                return "Claude Code"
+            else:
+                logger.warning(
+                    "Deep analysis requested but Claude CLI unavailable — falling back to Gemini "
+                    "service=%s type=%s cli_path=%s",
+                    classified.service_name, classified.query_type, self.claude_analyzer.cli_path,
+                )
+        else:
+            logger.info("Analyzer=Gemini service=%s type=%s needs_deep=%s", classified.service_name, classified.query_type, classified.needs_deep_analysis)
         return "Gemini"
 
     def _run_analysis(

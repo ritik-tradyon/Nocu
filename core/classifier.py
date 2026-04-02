@@ -9,9 +9,12 @@ Takes a natural language question and outputs:
 """
 
 import json
+import logging
 from google import genai
 from dataclasses import dataclass
 from typing import Optional
+
+logger = logging.getLogger("nocu.classifier")
 
 
 CLASSIFICATION_PROMPT = """You are a query classifier for a production observability tool.
@@ -121,8 +124,25 @@ class QueryClassifier:
                 raw_question=question,
             )
 
-        except (json.JSONDecodeError, Exception) as e:
-            # Fallback: try to extract service name manually
+        except json.JSONDecodeError as e:
+            logger.error("Classifier JSON parse failed question=%r raw_response=%r error=%s", question[:100], text[:200] if 'text' in dir() else '', e)
+            service = "unknown"
+            for svc in self.available_services:
+                if svc.lower() in question.lower():
+                    service = svc
+                    break
+            return ClassifiedQuery(
+                query_type="general",
+                service_name=service,
+                time_range="24 hours ago",
+                severity="medium",
+                search_terms=[],
+                needs_deep_analysis=False,
+                summary=question,
+                raw_question=question,
+            )
+        except Exception as e:
+            logger.error("Classifier failed question=%r error=%s", question[:100], e, exc_info=True)
             service = "unknown"
             for svc in self.available_services:
                 if svc.lower() in question.lower():
