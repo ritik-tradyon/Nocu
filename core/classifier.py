@@ -19,15 +19,22 @@ Given a user's natural language question about their production services, extrac
 
 Available services: {services_list}
 
+{conversation_section}
+
+The user's question may be a follow-up referencing previous messages. Use the conversation
+history to resolve ambiguous references like "what about hermes?", "drill deeper",
+"same thing for odin", "and the 502s?". If the user references a service or error type
+from a previous message, carry that context forward.
+
 Respond ONLY with a JSON object (no markdown, no backticks), with these fields:
 {{
     "query_type": one of ["error_analysis", "memory_spike", "performance", "latency", "general"],
-    "service_name": the service name mentioned (must match one from the available list, or "unknown"),
+    "service_name": the service name mentioned or inferred from conversation (must match one from the available list, or "unknown"),
     "time_range": extracted time range as NRQL-compatible string (e.g. "24 hours ago", "1 hour ago", "7 days ago"). Default to "24 hours ago" if not specified.,
     "severity": one of ["low", "medium", "high"] based on urgency of the question,
     "search_terms": list of 3-5 keywords to search for in the codebase (function names, error types, modules),
     "needs_deep_analysis": true if this requires code-level investigation (memory leaks, complex RCA), false for simple log summaries,
-    "summary": one-line summary of what the user is asking
+    "summary": one-line summary of what the user is asking (resolve any follow-up references)
 }}
 
 User question: {question}"""
@@ -62,10 +69,24 @@ class QueryClassifier:
         """Set the list of known service names for matching."""
         self.available_services = services
 
-    def classify(self, question: str) -> ClassifiedQuery:
-        """Classify a natural language question."""
+    def classify(
+        self, question: str, conversation_context: str = ""
+    ) -> ClassifiedQuery:
+        """Classify a natural language question.
+
+        Args:
+            question: The user's current question.
+            conversation_context: Formatted recent conversation history.
+        """
+        conversation_section = ""
+        if conversation_context:
+            conversation_section = (
+                f"Recent conversation with this user:\n{conversation_context}\n"
+            )
+
         prompt = CLASSIFICATION_PROMPT.format(
             services_list=", ".join(self.available_services) if self.available_services else "(not configured)",
+            conversation_section=conversation_section,
             question=question,
         )
 

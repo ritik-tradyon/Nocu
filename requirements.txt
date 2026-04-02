@@ -1,5 +1,6 @@
 # Telegram Bot
 python-telegram-bot>=21.0
+python-telegram-bot[job-queue]>=21.0
 
 # LLM - Gemini
 google-genai>=1.0.0

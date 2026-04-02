@@ -7,8 +7,9 @@
 venv/
 env/
 
-# Project index / cache
+# Project index / cache + memory
 .nocu_index/
+.nocu_memory
 
 # Secrets / local config
 config/settings.yaml

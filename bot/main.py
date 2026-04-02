@@ -28,6 +28,7 @@ from telegram.ext import (
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.orchestrator import NocuOrchestrator
+from core.scheduler import HealthReportScheduler
 
 # Logging
 logging.basicConfig(
@@ -37,8 +38,9 @@ logging.basicConfig(
 logger = logging.getLogger("nocu.bot")
 
 
-# ── Global orchestrator (initialized on startup) ──
+# ── Global orchestrator and scheduler (initialized on startup) ──
 orchestrator: NocuOrchestrator = None
+scheduler: HealthReportScheduler = None
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -58,7 +60,15 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/start — Show this help\n"
         "/services — List configured services\n"
         "/status — Check Nocu health\n"
-        "/index <service> — Re-index a service's code"
+        "/index <service> — Re-index a service's code\n\n"
+        "Feedback (after each analysis):\n"
+        "/useful <id> — Mark analysis as helpful\n"
+        "/notuseful <id> — Mark as not helpful\n"
+        "/fix <id> <desc> — Record what actually fixed it\n\n"
+        "Memory:\n"
+        "/history <service> — Past incidents for a service\n"
+        "/recurring <service> — Recurring error patterns\n"
+        "/digest — Run health report for all services now"
     )
 
 
@@ -108,10 +118,12 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         checks.append("ℹ️ Claude Code CLI: not available (will use Gemini for all queries)")
 
-    # Check indexes
-    indexed = len(orchestrator.service_indexes)
-    total = len(orchestrator.config.get("services", {}))
-    checks.append(f"📂 Code indexes: {indexed}/{total} services indexed")
+    # Memory stats
+    mem_stats = orchestrator.memory.get_stats()
+    checks.append(
+        f"🧠 Incident memory: {mem_stats['total_incidents']} incidents, "
+        f"{mem_stats['known_fixes']} fixes, accuracy {mem_stats['accuracy_rate']}"
+    )
 
     await update.message.reply_text("🔭 Nocu Status\n\n" + "\n".join(checks))
 
@@ -168,6 +180,144 @@ async def index_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Indexing failed: {e}")
 
 
+async def useful_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /useful <incident_id> — mark analysis as useful."""
+    if not context.args:
+        await update.message.reply_text("Usage: /useful <incident_id>")
+        return
+
+    incident_id = context.args[0]
+    found = orchestrator.memory.record_feedback(incident_id, was_useful=True)
+
+    if found:
+        await update.message.reply_text(f"✅ Marked {incident_id} as useful. Thanks!")
+    else:
+        await update.message.reply_text(f"❌ Incident {incident_id} not found.")
+
+
+async def notuseful_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /notuseful <incident_id> — mark analysis as not useful."""
+    if not context.args:
+        await update.message.reply_text("Usage: /notuseful <incident_id>")
+        return
+
+    incident_id = context.args[0]
+    found = orchestrator.memory.record_feedback(incident_id, was_useful=False)
+
+    if found:
+        await update.message.reply_text(
+            f"📝 Marked {incident_id} as not useful.\n"
+            f"You can record what the actual fix was with:\n"
+            f"/fix {incident_id} <description of what you did>"
+        )
+    else:
+        await update.message.reply_text(f"❌ Incident {incident_id} not found.")
+
+
+async def fix_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /fix <incident_id> <description> — record the actual fix."""
+    if not context.args or len(context.args) < 2:
+        await update.message.reply_text(
+            "Usage: /fix <incident_id> <what you did to fix it>\n"
+            "Example: /fix abc123 added connection pool timeout in db_session.py"
+        )
+        return
+
+    incident_id = context.args[0]
+    fix_description = " ".join(context.args[1:])
+
+    found = orchestrator.memory.record_feedback(
+        incident_id,
+        was_useful=True,  # if they're recording a fix, the analysis led somewhere
+        actual_fix=fix_description,
+    )
+
+    if found:
+        await update.message.reply_text(
+            f"✅ Recorded fix for {incident_id}:\n\"{fix_description}\"\n\n"
+            f"Nocu will reference this if a similar issue comes up again."
+        )
+    else:
+        await update.message.reply_text(f"❌ Incident {incident_id} not found.")
+
+
+async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /history <service> — show recent incidents for a service."""
+    if not context.args:
+        await update.message.reply_text(
+            "Usage: /history <service_name>\n"
+            f"Available: {', '.join(orchestrator.config.get('services', {}).keys())}"
+        )
+        return
+
+    service_name = context.args[0].lower()
+    history = orchestrator.memory.get_service_history(service_name, limit=10)
+
+    if not history:
+        await update.message.reply_text(f"No incidents recorded for {service_name}.")
+        return
+
+    lines = [f"📋 Recent incidents for {service_name}:\n"]
+    for inc in history:
+        ts = inc["timestamp"][:10]
+        useful_icon = ""
+        if inc["was_useful"] == 1:
+            useful_icon = " ✅"
+        elif inc["was_useful"] == 0:
+            useful_icon = " ❌"
+
+        fix = f"\n    Fix: {inc['actual_fix']}" if inc["actual_fix"] else ""
+        lines.append(
+            f"  [{inc['id']}] {ts} — {inc['query_type']}{useful_icon}\n"
+            f"    Q: {inc['question'][:80]}{fix}"
+        )
+
+    await update.message.reply_text("\n".join(lines))
+
+
+async def recurring_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /recurring <service> — show recurring error patterns."""
+    if not context.args:
+        await update.message.reply_text(
+            "Usage: /recurring <service_name>"
+        )
+        return
+
+    service_name = context.args[0].lower()
+    recurring = orchestrator.memory.get_recurring_errors(service_name)
+
+    if not recurring:
+        await update.message.reply_text(
+            f"No recurring patterns found for {service_name}.\n"
+            f"(Need at least 2 incidents with matching error patterns.)"
+        )
+        return
+
+    lines = [f"🔄 Recurring errors in {service_name}:\n"]
+    for rec in recurring:
+        codes = rec["error_codes"] or "none"
+        classes = rec["error_classes"] or "none"
+        lines.append(
+            f"  {rec['occurrence_count']}x — "
+            f"codes: {codes}, classes: {classes}\n"
+            f"    First: {rec['first_seen'][:10]}, Last: {rec['last_seen'][:10]}"
+        )
+        if rec["fixes_applied"]:
+            lines.append(f"    Fixes tried: {rec['fixes_applied']}")
+
+    await update.message.reply_text("\n".join(lines))
+
+
+async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /digest — run health report on demand."""
+    if scheduler:
+        await scheduler.run_on_demand(context, update.effective_chat.id)
+    else:
+        await update.message.reply_text(
+            "Scheduler not initialized. Check config/settings.yaml schedule section."
+        )
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle any text message as a Nocu query."""
     # Security: check if chat is allowed
@@ -195,6 +345,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         responses = await orchestrator.process_question(
             question=question,
+            user_id=str(update.effective_user.id),
             status_callback=send_status,
         )
 
@@ -212,7 +363,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     """Start the Nocu Telegram bot."""
-    global orchestrator
+    global orchestrator, scheduler
 
     # Find config file
     config_path = os.environ.get("NOCU_CONFIG", "config/settings.yaml")
@@ -224,6 +375,9 @@ def main():
     # Initialize orchestrator
     print("[nocu] Initializing...")
     orchestrator = NocuOrchestrator(config_path)
+
+    # Initialize scheduler
+    scheduler = HealthReportScheduler(orchestrator, orchestrator.config)
 
     # Get bot token
     bot_token = orchestrator.config.get("telegram", {}).get("bot_token")
@@ -239,7 +393,16 @@ def main():
     app.add_handler(CommandHandler("services", services_command))
     app.add_handler(CommandHandler("status", status_command))
     app.add_handler(CommandHandler("index", index_command))
+    app.add_handler(CommandHandler("useful", useful_command))
+    app.add_handler(CommandHandler("notuseful", notuseful_command))
+    app.add_handler(CommandHandler("fix", fix_command))
+    app.add_handler(CommandHandler("history", history_command))
+    app.add_handler(CommandHandler("recurring", recurring_command))
+    app.add_handler(CommandHandler("digest", digest_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    # Register scheduled health reports
+    scheduler.register(app)
 
     print("[nocu] 🔭 Bot is running! Send a message on Telegram.")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
