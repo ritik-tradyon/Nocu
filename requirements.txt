@@ -1,0 +1,21 @@
+# Telegram Bot
+python-telegram-bot>=21.0
+
+# LLM - Gemini
+google-genai>=1.0.0
+
+# New Relic API
+requests>=2.31.0
+
+# Config
+pyyaml>=6.0
+
+# Async support
+aiohttp>=3.9.0
+
+# Code indexing
+# (uses stdlib ast module - no extra deps)
+
+# Utilities
+python-dotenv>=1.0.0
+rich>=13.0.0  # nice logging
