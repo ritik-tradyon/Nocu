@@ -1,0 +1,129 @@
+# Nocu Configuration
+# Copy to settings.yaml and fill in your values
+
+telegram:
+  bot_token: "YOUR_TELEGRAM_BOT_TOKEN"
+  # Restrict to your chat ID for security
+  allowed_chat_ids: []  # e.g. [123456789]
+
+newrelic:
+  api_key: "YOUR_NEWRELIC_USER_API_KEY"  # User API key (not license key)
+  account_id: "YOUR_ACCOUNT_ID"
+  region: "US"  # or "EU"
+
+gemini:
+  api_key: "YOUR_GEMINI_API_KEY"
+  classifier_model: "gemini-2.0-flash"
+  analyzer_model: "gemini-2.5-flash"
+
+claude:
+  enabled: true
+  # Optional absolute path if the bot process cannot find `claude` on PATH
+  cli_path: "/home/ritik/.npm-global/bin/claude"
+  timeout_seconds: 120
+  deep_analysis_types:
+    - "memory_spike"
+    - "latency_investigation"
+    - "complex_rca"
+
+# ─────────────────────────────────────────────────
+# Service Registry
+# All repos live under /home/ritik/PycharmProjects/
+# ─────────────────────────────────────────────────
+repo_root: "/home/ritik/PycharmProjects"
+
+services:
+  pehchaan:
+    repo_path: "/home/ritik/PycharmProjects/pehchaan"
+    newrelic_app_name: "Pehchaan-Production"    # <-- update to your actual NR app name
+    description: "Authentication & identity service"
+    framework: "fastapi"
+
+  odin:
+    repo_path: "/home/ritik/PycharmProjects/odin"
+    newrelic_app_name: "Odin-Production"
+    description: "Core service (update description)"
+    framework: "fastapi"
+
+  hermes:
+    repo_path: "/home/ritik/PycharmProjects/hermes"
+    newrelic_app_name: "Hermes-Production"
+    description: "Messaging / communication service"
+    framework: "fastapi"
+
+  athena:
+    repo_path: "/home/ritik/PycharmProjects/athena"
+    newrelic_app_name: "Athena-Production"
+    description: "Intelligence / analytics service"
+    framework: "fastapi"
+
+  booth:
+    repo_path: "/home/ritik/PycharmProjects/booth"
+    newrelic_app_name: "Booth-Production"
+    description: "Booth service (update description)"
+    framework: "fastapi"
+
+  soochi:
+    repo_path: "/home/ritik/PycharmProjects/soochi"
+    newrelic_app_name: "Soochi-Production"
+    description: "Listing / inventory service"
+    framework: "fastapi"
+
+  khoj:
+    repo_path: "/home/ritik/PycharmProjects/khoj"
+    newrelic_app_name: "Khoj-Production"
+    description: "Search service"
+    framework: "fastapi"
+
+# ─────────────────────────────────────────────────
+# Code Context Sources
+# Nocu can consume context from multiple sources:
+#   1. deepmap  — function-level call chains (FUNCTION-MAP.md per service)
+#   2. servicemap — inter-service dependencies (Obsidian vault)
+#   3. scanner — Nocu's built-in AST indexer (fallback)
+# ─────────────────────────────────────────────────
+code_context:
+  # Primary: use deepmap's FUNCTION-MAP.md files
+  # These are dense, pre-computed call chains — ideal for LLM context
+  deepmap:
+    enabled: true
+    # Where deepmap outputs its FUNCTION-MAP.md per service
+    # Update this to match your deepmap output location
+    output_dir: "/home/ritik/Downloads/ObsidianVaults"
+    # Pattern to find function maps: {service_name}/FUNCTION-MAP.md
+    file_pattern: "{service_name}/FUNCTION-MAP.md"
+
+  # Secondary: use servicemap's inter-service dependency data
+  servicemap:
+    enabled: true
+    output_dir: "/home/ritik/Downloads/ObsidianVaults"
+    # The vault files that describe service-to-service dependencies
+    dependency_file: "ServiceMap/dependencies.md"
+
+  # Fallback: Nocu's built-in scanner (if deepmap hasn't been run)
+  scanner:
+    enabled: true
+    index_dir: ".nocu_index"
+    include_patterns:
+      - "**/*.py"
+    exclude_dirs:
+      - "__pycache__"
+      - ".git"
+      - "venv"
+      - "env"
+      - ".venv"
+      - "node_modules"
+      - "migrations"
+      - "tests"
+      - "test"
+    cache_hours: 24
+
+# ─────────────────────────────────────────────────
+# Gateway (APISIX)
+# ─────────────────────────────────────────────────
+gateway:
+  type: "apisix"
+  # Path to APISIX config if locally available
+  config_path: ""  # e.g. /path/to/apisix/conf/config.yaml
+  # If APISIX logs flow to New Relic, set the app name
+  newrelic_app_name: ""  # e.g. "APISIX-Gateway-Prod"
