@@ -62,6 +62,7 @@ class NocuOrchestrator:
         self.claude_analyzer = ClaudeAnalyzer(
             timeout_seconds=claude_config.get("timeout_seconds", 120),
             enabled=claude_config.get("enabled", True),
+            cli_path=claude_config.get("cli_path", "claude"),
         )
         self.deep_analysis_types = set(
             claude_config.get("deep_analysis_types", [])
@@ -348,9 +349,7 @@ class NocuOrchestrator:
 
     def _pick_analyzer(self, classified: ClassifiedQuery) -> str:
         """Decide which analyzer to use."""
-        if (classified.needs_deep_analysis
-                and classified.query_type in self.deep_analysis_types
-                and self.claude_analyzer.is_available()):
+        if classified.needs_deep_analysis and self.claude_analyzer.is_available():
             return "Claude Code"
         return "Gemini"
 

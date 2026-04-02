@@ -52,6 +52,20 @@ class HealthReportScheduler:
         # Which checks to run
         self.checks = schedule_config.get("checks", ["error_summary", "performance_summary"])
 
+    def _nrql_since(self) -> str:
+        """Convert period (e.g. '24 hours') to NRQL SINCE clause (e.g. '24 hours ago')."""
+        p = self.period.strip()
+        if not p.endswith(" ago"):
+            return p + " ago"
+        return p
+
+    @staticmethod
+    def _unwrap_nr_value(value) -> float:
+        """New Relic returns percentile() as a dict e.g. {'95': 0.123}. Unwrap to scalar."""
+        if isinstance(value, dict):
+            return float(next(iter(value.values()))) if value else 0.0
+        return value if value is not None else 0.0
+
     def register(self, app):
         """Register the scheduled job with the telegram bot's job queue.
 
@@ -165,8 +179,8 @@ class HealthReportScheduler:
 
         # Fetch key metrics
         try:
-            perf = fetcher.get_performance_summary(app_name, since=self.period)
-            errors = fetcher.get_error_counts_by_type(app_name, since=self.period)
+            perf = fetcher.get_performance_summary(app_name, since=self._nrql_since())
+            errors = fetcher.get_error_counts_by_type(app_name, since=self._nrql_since())
         except Exception as e:
             return f"❌ {service_name}: failed to fetch data ({e})"
 
@@ -176,10 +190,10 @@ class HealthReportScheduler:
 
         if not perf.is_empty and perf.results:
             result = perf.results[0]
-            avg_resp = result.get("avg_response_sec", 0)
-            p95_resp = result.get("p95_response_sec", 0)
-            total_reqs = result.get("total_requests", 0)
-            error_rate = result.get("error_rate", 0)
+            avg_resp = self._unwrap_nr_value(result.get("avg_response_sec", 0))
+            p95_resp = self._unwrap_nr_value(result.get("p95_response_sec", 0))
+            total_reqs = self._unwrap_nr_value(result.get("total_requests", 0))
+            error_rate = self._unwrap_nr_value(result.get("error_rate", 0))
 
             # Check against thresholds
             if error_rate and float(error_rate) > 5:
