@@ -31,29 +31,29 @@ ERROR_ANALYSIS_PROMPT = """You are a production observability expert analyzing e
 
 ---
 
-You have both the production error data AND the full function call graph for this service.
-The code context includes route-to-function call chains, which functions call external services
-(HTTP, database, AWS, Redis, Celery), and the reverse call graph (what calls what).
+STRICT SOURCE ATTRIBUTION RULE:
+Every statement you make must be tagged with its source:
+- [NR] — the claim comes directly from New Relic data above (a field value, count, error message, timestamp, etc.)
+- [CODE] — the claim is inferred from the code context / call graph
+- [NR+CODE] — NR data identified the symptom AND code context explains why
 
-Analyze these errors and provide:
+Never blend sources into one sentence without tagging. If you cannot back a claim with [NR] data, you must tag it [CODE] and phrase it as an inference ("the code suggests...", "likely because..."), not a fact.
 
-1. ERROR SUMMARY: Top errors by frequency and severity
+Structure your response exactly as:
 
-2. CALL CHAIN TRACE: For the top errors, trace backwards through the call chain.
-   Which route handler triggers the error? What's the call path from endpoint to failure?
-   Reference specific function names and files.
+FROM NEW RELIC DATA:
+(Only facts directly visible in the NR data above — error messages, counts, URIs, timestamps, hostnames. Tag each line [NR].)
 
-3. EXTERNAL CALL FAILURES: Are errors coming from external calls (DB queries, HTTP to
-   other services, AWS/Redis operations)? Cross-reference error messages with the
-   external call markers in the code context.
+FROM CODE ANALYSIS:
+(Only inferences drawn from the call graph / code context. Tag each line [CODE]. Use "likely", "suggests", "based on code".)
 
-4. DEPLOYMENT CORRELATION: Did any recent deployment introduce these errors?
+COMBINED ASSESSMENT:
+(Cross-references where NR symptoms map to code paths. Tag each line [NR+CODE].)
 
-5. FIX PRIORITY: What to fix first, ordered by impact. Be specific — name the function,
-   the file, and what change to make.
+FIX PRIORITY:
+(Ordered list of what to fix. Tag the evidence basis for each item.)
 
-Be direct and specific. This goes to a developer via Telegram.
-Use plain text formatting — no markdown headers or bold."""
+Plain text only — no markdown. This goes to a developer via Telegram."""
 
 PERFORMANCE_PROMPT = """You are analyzing performance data for a Python {framework} service called "{service_name}".
 
@@ -68,21 +68,29 @@ PERFORMANCE_PROMPT = """You are analyzing performance data for a Python {framewo
 
 ---
 
-You have the function call graph showing which endpoints call which internal functions,
-and which of those make external calls (DB, HTTP, AWS, Redis).
+STRICT SOURCE ATTRIBUTION RULE:
+Every statement must be tagged with its source:
+- [NR] — directly from the New Relic metrics above (a measured number, latency value, endpoint name)
+- [CODE] — inferred from the code context / call graph
+- [NR+CODE] — NR identified the slow endpoint AND code explains the likely cause
 
-Analyze performance and provide:
+Never blend sources. If you cannot point to a specific NR value, tag it [CODE] and phrase it as an inference.
 
-1. HEALTH ASSESSMENT: Overall service health based on response times and error rates
+Structure your response exactly as:
 
-2. BOTTLENECK TRACE: For the slowest endpoints, trace the call chain. Where is time
-   being spent? Which external calls (DB queries, HTTP calls to other services) are
-   likely causing latency? Reference specific functions.
+FROM NEW RELIC DATA:
+(Measured facts — latencies, throughput, p95, error rates, slowest endpoint names. Tag each [NR].)
 
-3. OPTIMIZATION TARGETS: Which functions or external calls to optimize first.
-   Be specific — name the function, its file, and the likely cause.
+FROM CODE ANALYSIS:
+(Why those endpoints are likely slow based on call graph — external calls, DB queries, etc. Tag each [CODE].)
 
-Keep it concise for Telegram. Plain text formatting.
+COMBINED ASSESSMENT:
+(NR bottleneck mapped to code path. Tag each [NR+CODE].)
+
+OPTIMIZATION TARGETS:
+(Ordered list. Tag the evidence basis for each item.)
+
+Plain text only. No markdown. This goes to a developer via Telegram.
 """
 
 

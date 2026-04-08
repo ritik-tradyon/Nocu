@@ -47,7 +47,7 @@ services:
 
   hermes:
     repo_path: "/home/ritik/PycharmProjects/hermes"
-    newrelic_app_name: "Hermes-Production"
+    newrelic_app_name: "hermes"
     description: "Messaging / communication service"
     framework: "fastapi"
 
@@ -154,3 +154,19 @@ schedule:
   checks:
     - "error_summary"
     - "performance_summary"
+
+# ─────────────────────────────────────────────────
+# Feature Flags
+# ─────────────────────────────────────────────────
+features:
+  blast_radius:
+    enabled: true
+    # New Relic transaction name prefix for your FastAPI apps.
+    # Check NR APM > Transactions tab to confirm the exact format.
+    # Common: "WebTransaction/FastAPI/handler_name" or "WebTransaction/Uri/path"
+    nr_transaction_prefix: "WebTransaction/FastAPI"
+    # How many days of traffic to use for risk scoring
+    traffic_window_days: 7
+    thresholds:
+      high: 1000    # requests in window to be HIGH risk
+      medium: 100   # requests in window to be MEDIUM risk
