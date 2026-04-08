@@ -90,6 +90,12 @@ class NewRelicFetcher:
         }
         """ % (self.account_id, nrql.replace('"', '\\"'))
 
+        # Guard: classifier may return "SINCE 2 hours ago" — strip the leading keyword
+        # so callers that do f"SINCE {since}" don't produce "SINCE SINCE ..."
+        nrql = nrql.replace(" SINCE SINCE ", " SINCE ").replace(" SINCE since ", " SINCE ")
+
+        logger.info("NR query → %s", nrql)
+
         try:
             response = self.session.post(
                 self.endpoint,
@@ -99,10 +105,12 @@ class NewRelicFetcher:
             response.raise_for_status()
             data = response.json()
 
+            logger.debug("NR raw response ← %s", json.dumps(data))
+
             # Check for GraphQL errors
             if "errors" in data:
                 error_msg = "; ".join(e.get("message", "") for e in data["errors"])
-                logger.error("NerdGraph error nrql=%r error=%s", nrql[:120], error_msg)
+                logger.error("NR response errors: %s | full response: %s", error_msg, json.dumps(data))
                 return NRQLResult(query=nrql, results=[], error=error_msg)
 
             # Extract results
@@ -112,14 +120,14 @@ class NewRelicFetcher:
                 results=nrql_data.get("results", []),
                 metadata=nrql_data.get("metadata"),
             )
-            logger.debug("NerdGraph ok nrql=%r rows=%d", nrql[:120], len(result.results))
+            logger.info("NR response ← %d rows | metadata: %s", len(result.results), result.metadata)
             return result
 
         except requests.RequestException as e:
-            logger.error("NerdGraph request failed nrql=%r error=%s", nrql[:120], e)
+            logger.error("NR request failed: %s | nrql: %s", e, nrql)
             return NRQLResult(query=nrql, results=[], error=str(e))
         except (KeyError, TypeError) as e:
-            logger.error("NerdGraph unexpected response nrql=%r error=%s", nrql[:120], e)
+            logger.error("NR unexpected response shape: %s | nrql: %s", e, nrql)
             return NRQLResult(query=nrql, results=[], error=f"Unexpected response format: {e}")
 
     # ──────────────────────────────────────────────
@@ -137,7 +145,8 @@ class NewRelicFetcher:
             f"SELECT timestamp, message, error.class, error.message, "
             f"level, hostname "
             f"FROM Log "
-            f"WHERE entity.name = '{app_name}' AND level = 'ERROR' "
+            f"WHERE entity.name = '{app_name}' "
+            f"AND level IN ('ERROR', 'error', 'Error', 'CRITICAL', 'critical') "
             f"SINCE {since} LIMIT {limit}"
         )
         return self.execute_nrql(nrql)
@@ -247,6 +256,39 @@ class NewRelicFetcher:
             f"FROM Deployment "
             f"WHERE appName = '{app_name}' "
             f"SINCE {since} LIMIT 10"
+        )
+        return self.execute_nrql(nrql)
+
+    def get_request_traffic(
+        self,
+        app_name: str,
+        since: str = "1 hour ago",
+        limit: int = 100,
+    ) -> NRQLResult:
+        """Fetch request traffic — who made requests, what URIs, response codes."""
+        nrql = (
+            f"SELECT timestamp, request.uri, request.method, "
+            f"response.status, duration, host, "
+            f"request.headers.x-user-id, request.headers.x-forwarded-for, "
+            f"user.id, userId, appName "
+            f"FROM Transaction "
+            f"WHERE appName = '{app_name}' "
+            f"SINCE {since} LIMIT {limit}"
+        )
+        return self.execute_nrql(nrql)
+
+    def get_request_logs(
+        self,
+        app_name: str,
+        since: str = "1 hour ago",
+        limit: int = 100,
+    ) -> NRQLResult:
+        """Fetch raw log lines for a time window — useful for specific-time lookups."""
+        nrql = (
+            f"SELECT timestamp, message, level, hostname "
+            f"FROM Log "
+            f"WHERE entity.name = '{app_name}' "
+            f"SINCE {since} LIMIT {limit}"
         )
         return self.execute_nrql(nrql)
 

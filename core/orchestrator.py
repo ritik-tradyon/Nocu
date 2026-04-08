@@ -377,6 +377,14 @@ class NocuOrchestrator:
                 app_name, since=classified.time_range
             )
 
+        elif classified.query_type == "traffic_analysis":
+            data["request_traffic"] = self.fetcher.get_request_traffic(
+                app_name, since=classified.time_range
+            )
+            data["request_logs"] = self.fetcher.get_request_logs(
+                app_name, since=classified.time_range
+            )
+
         else:
             # General — fetch everything
             data["performance"] = self.fetcher.get_performance_summary(

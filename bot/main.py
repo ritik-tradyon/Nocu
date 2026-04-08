@@ -29,6 +29,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.orchestrator import NocuOrchestrator
 from core.scheduler import HealthReportScheduler
+from core.formatter import format_blast_radius
+from analyzers.blast_radius import BlastRadiusAnalyzer
 
 # Logging
 logging.basicConfig(
@@ -60,7 +62,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/start — Show this help\n"
         "/services — List configured services\n"
         "/status — Check Nocu health\n"
-        "/index <service> — Re-index a service's code\n\n"
+        "/index <service> — Re-index a service's code\n"
+        "/blast <service> <func/file> — Show blast radius of a code change\n\n"
         "Feedback (after each analysis):\n"
         "/useful <id> — Mark analysis as helpful\n"
         "/notuseful <id> — Mark as not helpful\n"
@@ -318,6 +321,48 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+async def blast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /blast <service> <target> — show blast radius of a code change."""
+    if not context.args or len(context.args) < 2:
+        await update.message.reply_text(
+            "Usage: /blast <service> <function_or_file>\n\n"
+            "Examples:\n"
+            "  /blast pehchaan verify_credentials\n"
+            "  /blast odin app/services/payment.py\n"
+            "  /blast hermes process_notification\n\n"
+            f"Available services: {', '.join(orchestrator.config.get('services', {}).keys())}"
+        )
+        return
+
+    service_name = context.args[0].lower()
+    target = " ".join(context.args[1:])
+
+    services = orchestrator.config.get("services", {})
+    if service_name not in services:
+        await update.message.reply_text(
+            f"Unknown service '{service_name}'.\n"
+            f"Available: {', '.join(services.keys())}"
+        )
+        return
+
+    await update.message.reply_text(f"🔍 Analyzing blast radius for `{target}` in {service_name}...")
+
+    try:
+        analyzer = BlastRadiusAnalyzer(
+            newrelic_fetcher=orchestrator.fetcher,
+            settings=orchestrator.config,
+        )
+        result = analyzer.analyze(service_name, target)
+        messages = format_blast_radius(result)
+        for msg in messages:
+            await update.message.reply_text(msg)
+    except Exception as e:
+        logger.exception("blast_command error service=%s target=%r error=%s", service_name, target, e)
+        await update.message.reply_text(
+            f"❌ Blast radius analysis failed.\n\nError: {str(e)[:300]}\n\nCheck logs for details."
+        )
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle any text message as a Nocu query."""
     # Security: check if chat is allowed
@@ -399,6 +444,7 @@ def main():
     app.add_handler(CommandHandler("history", history_command))
     app.add_handler(CommandHandler("recurring", recurring_command))
     app.add_handler(CommandHandler("digest", digest_command))
+    app.add_handler(CommandHandler("blast", blast_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     # Register scheduled health reports

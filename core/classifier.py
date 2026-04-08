@@ -29,6 +29,8 @@ history to resolve ambiguous references like "what about hermes?", "drill deeper
 "same thing for odin", "and the 502s?". If the user references a service or error type
 from a previous message, carry that context forward.
 
+Use "traffic_analysis" when the user asks about: who was making requests, which users/IPs accessed the service, request patterns, specific user activity, or what was happening in the service at a specific time (not about errors or performance, but about traffic/access patterns).
+
 IMPORTANT — follow-up escalation phrases like "do a deeper analysis", "deep dive", "go deeper",
 "dig deeper", "more details", "investigate further", "root cause", "why is this happening"
 MUST inherit the query_type and service_name from the most recent conversation turn, NOT default
@@ -36,9 +38,12 @@ to "general". Set needs_deep_analysis to true for these phrases.
 
 Respond ONLY with a JSON object (no markdown, no backticks), with these fields:
 {{
-    "query_type": one of ["error_analysis", "memory_spike", "performance", "latency", "general"],
+    "query_type": one of ["error_analysis", "memory_spike", "performance", "latency", "traffic_analysis", "general"],
     "service_name": the service name mentioned or inferred from conversation (must match one from the available list, or "unknown"),
-    "time_range": extracted time range as NRQL-compatible string (e.g. "24 hours ago", "1 hour ago", "7 days ago"). Default to "24 hours ago" if not specified.,
+    "time_range": extracted time range WITHOUT the word SINCE. Two formats allowed:
+      - Relative (preferred when user says "last X hours/days"): "2 hours ago", "6 hours ago", "24 hours ago", "7 days ago"
+      - Absolute (use when user specifies a clock time or timestamp): "'2026-04-03 02:20:00' UNTIL '2026-04-03 02:29:00'" — always convert to UTC, no SINCE prefix.
+      Default to "24 hours ago" if not specified.,
     "severity": one of ["low", "medium", "high"] based on urgency of the question,
     "search_terms": list of 3-5 keywords to search for in the codebase (function names, error types, modules),
     "needs_deep_analysis": true if this requires code-level investigation (memory leaks, complex RCA, root cause analysis) OR if the user explicitly asks for a deeper/more detailed analysis, false for simple log summaries,
@@ -62,7 +67,7 @@ class ClassifiedQuery:
 
     @property
     def is_valid(self) -> bool:
-        return self.service_name != "unknown" and self.query_type != "general"
+        return self.service_name != "unknown"
 
 
 class QueryClassifier:
